@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <title>狗狗吃骨頭｜Dog Park Snake</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    .wrapper {
+      text-align: center;
+    }
+    canvas {
+      border-radius: 12px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+      background: #000;
+      display: block;
+      margin: 0 auto 10px;
+    }
+    .hint {
+      font-size: 14px;
+      color: #ddd;
+    }
+  </style>
+</head>
+<body>
+<div class="wrapper">
+  <canvas id="game"></canvas>
+  <div class="hint">
+    ⌨️ 方向鍵 / WASD 控制狗狗　|　R 重新開始<br>
+    🦴 每 10 分出現「大骨頭 bonus」 (+3 分)　
+    🐶 吃到骨頭會有音效 ＋ 愛心
+  </div>
+</div>
+
+<script>
+  // --- 音效初始化（bone.wav / gameover_waiwai.wav 要跟 index.html 放同一個資料夾） ---
+  const boneSound     = new Audio("bone.wav");
+  const gameoverSound = new Audio("gameover_waiwai.wav");
+  boneSound.volume     = 0.9;
+  gameoverSound.volume = 0.9;
+  boneSound.load();
+  gameoverSound.load();
+
+  // --- 解除 Chrome/Safari 自動播放封鎖（第一次按鍵時偷拿權限，不出聲）---
+  document.addEventListener("keydown", () => {
+    boneSound.play()
+      .then(() => {
+        boneSound.pause();
+        boneSound.currentTime = 0;
+      })
+      .catch(() => {});
+    gameoverSound.play()
+      .then(() => {
+        gameoverSound.pause();
+        gameoverSound.currentTime = 0;
+      })
+      .catch(() => {});
+  }, { once: true });
+
+  // --- 遊戲設定 ---
+  const CELL_SIZE   = 24;
+  const GRID_WIDTH  = 30;
+  const GRID_HEIGHT = 30;
+  const WIDTH  = CELL_SIZE * GRID_WIDTH;
+  const HEIGHT = CELL_SIZE * GRID_HEIGHT;
+  const SPEED  = 120; // ms
+
+  const SKY_COLOR   = "#9fd5ff";
+  const GRASS_COLOR = "#15803d";
+  const PATH_COLOR  = "#4b5563";
+
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  canvas.width  = WIDTH;
+  canvas.height = HEIGHT;
+
+  // 狀態
+  let snake;
+  let direction;
+  let pendingDirection;
+  let food;
+  let score;
+  let gameOver;
+  let bonusFood;          // 每 10 分「大骨頭」
+  let heartEffects = [];  // {x, y, life}
+
+  function resetGame() {
+    snake = [
+      { x: Math.floor(GRID_WIDTH / 2),     y: Math.floor(GRID_HEIGHT / 2) },
+      { x: Math.floor(GRID_WIDTH / 2) - 1, y: Math.floor(GRID_HEIGHT / 2) },
+      { x: Math.floor(GRID_WIDTH / 2) - 2, y: Math.floor(GRID_HEIGHT / 2) },
+    ];
+    direction        = { x: 1, y: 0 };
+    pendingDirection = { x: 1, y: 0 };
+    food       = randomFoodPosition();
+    score      = 0;
+    gameOver   = false;
+    bonusFood  = false;
+    heartEffects = [];
+  }
+
+  function randomFoodPosition() {
+    while (true) {
+      const x = Math.floor(Math.random() * GRID_WIDTH);
+      const y = Math.floor(Math.random() * GRID_HEIGHT);
+      if (!snake.some(s => s.x === x && s.y === y)) {
+        return { x, y };
+      }
+    }
+  }
+
+  function changeDirection(dx, dy) {
+    const curDx = direction.x;
+    const curDy = direction.y;
+    // 防止 180 度轉向
+    if (dx === -curDx && dy === -curDy) return;
+    pendingDirection = { x: dx, y: dy };
+  }
+
+  document.addEventListener("keydown", e => {
+    switch (e.key) {
+      case "ArrowUp":
+      case "w":
+      case "W":
+        changeDirection(0, -1);
+        break;
+      case "ArrowDown":
+      case "s":
+      case "S":
+        changeDirection(0, 1);
+        break;
+      case "ArrowLeft":
+      case "a":
+      case "A":
+        changeDirection(-1, 0);
+        break;
+      case "ArrowRight":
+      case "d":
+      case "D":
+        changeDirection(1, 0);
+        break;
+      case "r":
+      case "R":
+        if (gameOver) resetGame();
+        break;
+      default:
+        break;
+    }
+  });
+
+  function moveSnake() {
+    const head = snake[0];
+    const dx = direction.x;
+    const dy = direction.y;
+    const newHead = { x: head.x + dx, y: head.y + dy };
+
+    // 撞牆
+    if (
+      newHead.x < 0 || newHead.x >= GRID_WIDTH ||
+      newHead.y < 0 || newHead.y >= GRID_HEIGHT
+    ) {
+      endGame();
+      return;
+    }
+
+    // 撞到自己
+    if (snake.some(s => s.x === newHead.x && s.y === newHead.y)) {
+      endGame();
+      return;
+    }
+
+    // 前進：頭放前面
+    snake.unshift(newHead);
+
+    // 吃到骨頭
+    if (newHead.x === food.x && newHead.y === food.y) {
+      // 分數：普通 +1，大骨頭 +3
+      if (bonusFood) {
+        score += 3;
+      } else {
+        score += 1;
+      }
+
+      // 播放咬骨頭音效
+      try {
+        boneSound.currentTime = 0;
+        boneSound.play();
+      } catch (e) {}
+
+      // 愛心特效：從狗狗頭位置往上飄
+      const hx = newHead.x * CELL_SIZE + CELL_SIZE / 2;
+      const hy = newHead.y * CELL_SIZE + CELL_SIZE / 2;
+      heartEffects.push({ x: hx, y: hy, life: 12 });
+
+      // 生成下一塊骨頭
+      food = randomFoodPosition();
+
+      // 每 10、20、30…分 → 下一顆是大骨頭
+      bonusFood = (score % 10 === 0);
+    } else {
+      // 沒吃到就移除尾巴
+      snake.pop();
+    }
+  }
+
+  function endGame() {
+    if (!gameOver) {
+      gameOver = true;
+      try {
+        gameoverSound.currentTime = 0;
+        gameoverSound.play();
+      } catch (e) {}
+    }
+  }
+
+  // 背景：天空從 0 開始，沒有上方留白
+  function drawBackground() {
+    // 天空
+    ctx.fillStyle = SKY_COLOR;
+    ctx.fillRect(0, 0, WIDTH, HEIGHT * 0.4);
+
+    // 草地
+    ctx.fillStyle = GRASS_COLOR;
+    ctx.fillRect(0, HEIGHT * 0.4, WIDTH, HEIGHT * 0.6);
+
+    // 小路
+    const pathWidth = CELL_SIZE * 4;
+    ctx.fillStyle = PATH_COLOR;
+    ctx.fillRect(
+      WIDTH / 2 - pathWidth / 2,
+      HEIGHT * 0.4,
+      pathWidth,
+      HEIGHT * 0.6
+    );
+
+    // 樹木
+    const treeXs = [CELL_SIZE * 3, CELL_SIZE * 7, CELL_SIZE * 22, CELL_SIZE * 26];
+    for (const x of treeXs) {
+      // 樹幹
+      ctx.fillStyle = "#92400e";
+      ctx.fillRect(x - 6, HEIGHT * 0.4 - 10, 12, 40);
+
+      // 樹冠
+      ctx.beginPath();
+      ctx.fillStyle = "#16a34a";
+      ctx.ellipse(
+        x,
+        HEIGHT * 0.4 - 20,
+        20,
+        24,
+        0,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+    }
+
+    // 太陽
+    ctx.font = "28px 'Apple Color Emoji'";
+    ctx.fillText("☀️", WIDTH - 60, 45);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+    // 背景
+    drawBackground();
+
+    // 分數（純白字，畫在天空上）
+    ctx.font = "22px -apple-system, 'Segoe UI Emoji'";
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText("Score: " + score, 10, 40);
+
+    // 食物（骨頭 / 大骨頭）
+    const fx = food.x * CELL_SIZE + CELL_SIZE / 2;
+    const fy = food.y * CELL_SIZE + CELL_SIZE / 2;
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = bonusFood
+      ? "32px 'Apple Color Emoji'"
+      : "24px 'Apple Color Emoji'";
+    ctx.fillText("🦴", fx, fy);
+
+    // 蛇（狗狗）
+    for (let i = 0; i < snake.length; i++) {
+      const seg = snake[i];
+      const cx = seg.x * CELL_SIZE + CELL_SIZE / 2;
+      const cy = seg.y * CELL_SIZE + CELL_SIZE / 2;
+
+      ctx.font = "24px 'Apple Color Emoji'";
+      ctx.fillText("🐕", cx, cy);
+    }
+
+    // ❤️ 愛心特效
+    const newHearts = [];
+    for (const h of heartEffects) {
+      ctx.font = "20px 'Apple Color Emoji'";
+      ctx.fillText("❤️", h.x, h.y);
+      h.y -= 2;
+      h.life -= 1;
+      if (h.life > 0) newHearts.push(h);
+    }
+    heartEffects = newHearts;
+
+    // Game Over 畫面
+    if (gameOver) {
+      ctx.fillStyle = "rgba(15,23,42,0.9)";
+      const w = 280, h = 120;
+      const x = WIDTH / 2 - w / 2;
+      const y = HEIGHT / 2 - h / 2;
+
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = "white";
+      ctx.strokeRect(x, y, w, h);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#f97373";
+      ctx.font = "28px Arial";
+      ctx.fillText("Game Over", WIDTH / 2, HEIGHT / 2 - 10);
+
+      ctx.font = "16px Arial";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText("按 R 重新開始", WIDTH / 2, HEIGHT / 2 + 25);
+    }
+  }
+
+  // 🔁 遊戲主迴圈
+  function gameLoop() {
+    if (!gameOver) {
+      direction = { ...pendingDirection };
+      moveSnake();
+    }
+    draw();
+  }
+
+  // 啟動
+  resetGame();
+  setInterval(gameLoop, SPEED);
+</script>
+</body>
+</html>
